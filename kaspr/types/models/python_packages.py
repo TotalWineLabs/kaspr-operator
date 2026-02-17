@@ -4,14 +4,32 @@ from typing import Optional, List
 from kaspr.types.base import BaseModel
 
 
+class GCSSecretReference(BaseModel):
+    """Reference to a K8s Secret containing GCS service account key."""
+
+    name: str
+    key: Optional[str]
+
+
+class GCSCacheConfig(BaseModel):
+    """GCS cache configuration."""
+
+    bucket: str
+    prefix: Optional[str]
+    max_archive_size: Optional[str]
+    secret_ref: GCSSecretReference
+
+
 class PythonPackagesCache(BaseModel):
     """Python packages cache configuration."""
     
+    type: Optional[str]
     enabled: Optional[bool]
     storage_class: Optional[str]
     size: Optional[str]
     access_mode: Optional[str]
     delete_claim: Optional[bool]
+    gcs: Optional[GCSCacheConfig]
 
 
 class PythonPackagesInstallPolicy(BaseModel):
@@ -29,10 +47,28 @@ class PythonPackagesResources(BaseModel):
     limits: Optional[dict]
 
 
+class SecretReference(BaseModel):
+    """Reference to a Kubernetes Secret."""
+
+    name: str
+    username_key: Optional[str]
+    password_key: Optional[str]
+
+
+class PythonPackagesCredentials(BaseModel):
+    """PyPI authentication credentials."""
+
+    secret_ref: SecretReference
+
+
 class PythonPackagesSpec(BaseModel):
     """Python packages specification."""
     
     packages: List[str]
+    index_url: Optional[str]
+    extra_index_urls: Optional[List[str]]
+    trusted_hosts: Optional[List[str]]
+    credentials: Optional[PythonPackagesCredentials]
     cache: Optional[PythonPackagesCache]
     install_policy: Optional[PythonPackagesInstallPolicy]
     resources: Optional[PythonPackagesResources]

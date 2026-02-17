@@ -3,18 +3,26 @@
 import pytest
 from marshmallow import ValidationError
 from kaspr.types.models.python_packages import (
+    GCSCacheConfig,
+    GCSSecretReference,
     PythonPackagesCache,
+    PythonPackagesCredentials,
     PythonPackagesInstallPolicy,
     PythonPackagesResources,
     PythonPackagesSpec,
     PythonPackagesStatus,
+    SecretReference,
 )
 from kaspr.types.schemas.python_packages import (
+    GCSCacheConfigSchema,
+    GCSSecretReferenceSchema,
     PythonPackagesCacheSchema,
+    PythonPackagesCredentialsSchema,
     PythonPackagesInstallPolicySchema,
     PythonPackagesResourcesSchema,
     PythonPackagesSpecSchema,
     PythonPackagesStatusSchema,
+    SecretReferenceSchema,
 )
 
 
@@ -526,4 +534,614 @@ class TestPythonPackagesUtilities:
         assert "exit_code=$?" in script
         assert "Installation failed" in script
         assert "blocking pod startup" in script
+
+
+# =============================================================================
+# Phase 2 Tests
+# =============================================================================
+
+
+class TestSecretReference:
+    """Tests for SecretReference model and schema."""
+
+    def test_secret_reference_model_instantiation(self):
+        """Test SecretReference model can be instantiated."""
+        ref = SecretReference(
+            name="my-secret",
+            username_key="user",
+            password_key="pass",
+        )
+        assert ref.name == "my-secret"
+        assert ref.username_key == "user"
+        assert ref.password_key == "pass"
+
+    def test_secret_reference_schema_valid(self):
+        """Test SecretReferenceSchema with valid data."""
+        schema = SecretReferenceSchema()
+        data = {
+            "name": "pypi-credentials",
+            "usernameKey": "user",
+            "passwordKey": "token",
+        }
+        result = schema.load(data)
+        assert isinstance(result, SecretReference)
+        assert result.name == "pypi-credentials"
+        assert result.username_key == "user"
+        assert result.password_key == "token"
+
+    def test_secret_reference_schema_name_required(self):
+        """Test SecretReferenceSchema requires name."""
+        schema = SecretReferenceSchema()
+        with pytest.raises(ValidationError) as exc_info:
+            schema.load({})
+        assert "name" in str(exc_info.value)
+
+    def test_secret_reference_schema_optional_keys(self):
+        """Test SecretReferenceSchema with only name."""
+        schema = SecretReferenceSchema()
+        result = schema.load({"name": "my-secret"})
+        assert isinstance(result, SecretReference)
+        assert result.name == "my-secret"
+        assert result.username_key is None
+        assert result.password_key is None
+
+
+class TestPythonPackagesCredentials:
+    """Tests for PythonPackagesCredentials model and schema."""
+
+    def test_credentials_model_instantiation(self):
+        """Test PythonPackagesCredentials model can be instantiated."""
+        ref = SecretReference(name="my-secret")
+        creds = PythonPackagesCredentials(secret_ref=ref)
+        assert creds.secret_ref.name == "my-secret"
+
+    def test_credentials_schema_valid(self):
+        """Test PythonPackagesCredentialsSchema with valid data."""
+        schema = PythonPackagesCredentialsSchema()
+        data = {
+            "secretRef": {
+                "name": "pypi-creds",
+                "usernameKey": "user",
+                "passwordKey": "pass",
+            }
+        }
+        result = schema.load(data)
+        assert isinstance(result, PythonPackagesCredentials)
+        assert result.secret_ref.name == "pypi-creds"
+        assert result.secret_ref.username_key == "user"
+        assert result.secret_ref.password_key == "pass"
+
+    def test_credentials_schema_requires_secret_ref(self):
+        """Test PythonPackagesCredentialsSchema requires secretRef."""
+        schema = PythonPackagesCredentialsSchema()
+        with pytest.raises(ValidationError):
+            schema.load({})
+
+
+class TestPythonPackagesSpecPhase2:
+    """Tests for Phase 2 fields on PythonPackagesSpec."""
+
+    def test_spec_with_index_url(self):
+        """Test spec schema with indexUrl."""
+        schema = PythonPackagesSpecSchema()
+        data = {
+            "packages": ["requests"],
+            "indexUrl": "https://pypi.company.com/simple",
+        }
+        result = schema.load(data)
+        assert result.index_url == "https://pypi.company.com/simple"
+
+    def test_spec_with_extra_index_urls(self):
+        """Test spec schema with extraIndexUrls."""
+        schema = PythonPackagesSpecSchema()
+        data = {
+            "packages": ["requests"],
+            "extraIndexUrls": [
+                "https://pypi.company.com/simple",
+                "https://internal.example.com/simple",
+            ],
+        }
+        result = schema.load(data)
+        assert len(result.extra_index_urls) == 2
+
+    def test_spec_with_trusted_hosts(self):
+        """Test spec schema with trustedHosts."""
+        schema = PythonPackagesSpecSchema()
+        data = {
+            "packages": ["requests"],
+            "trustedHosts": ["pypi.company.com", "internal.example.com"],
+        }
+        result = schema.load(data)
+        assert len(result.trusted_hosts) == 2
+
+    def test_spec_with_credentials(self):
+        """Test spec schema with credentials."""
+        schema = PythonPackagesSpecSchema()
+        data = {
+            "packages": ["my-lib"],
+            "indexUrl": "https://pypi.company.com/simple",
+            "credentials": {
+                "secretRef": {
+                    "name": "pypi-credentials",
+                }
+            },
+        }
+        result = schema.load(data)
+        assert isinstance(result.credentials, PythonPackagesCredentials)
+        assert result.credentials.secret_ref.name == "pypi-credentials"
+
+    def test_spec_invalid_index_url(self):
+        """Test spec schema rejects invalid indexUrl."""
+        schema = PythonPackagesSpecSchema()
+        data = {
+            "packages": ["requests"],
+            "indexUrl": "ftp://invalid.com/simple",
+        }
+        with pytest.raises(ValidationError) as exc_info:
+            schema.load(data)
+        assert "http://" in str(exc_info.value) or "https://" in str(exc_info.value)
+
+    def test_spec_invalid_extra_index_url(self):
+        """Test spec schema rejects invalid extraIndexUrls."""
+        schema = PythonPackagesSpecSchema()
+        data = {
+            "packages": ["requests"],
+            "extraIndexUrls": ["not-a-url"],
+        }
+        with pytest.raises(ValidationError) as exc_info:
+            schema.load(data)
+        assert "http://" in str(exc_info.value) or "https://" in str(exc_info.value)
+
+    def test_spec_full_phase2_config(self):
+        """Test spec schema with all Phase 2 fields."""
+        schema = PythonPackagesSpecSchema()
+        data = {
+            "packages": ["my-lib==1.0.0", "internal-utils>=2.0.0"],
+            "indexUrl": "https://artifacts.company.com/pypi/simple",
+            "extraIndexUrls": ["https://pypi.org/simple"],
+            "trustedHosts": ["artifacts.company.com"],
+            "credentials": {
+                "secretRef": {
+                    "name": "prod-pypi-creds",
+                    "usernameKey": "svc-user",
+                    "passwordKey": "svc-token",
+                }
+            },
+            "installPolicy": {
+                "retries": 3,
+                "timeout": 900,
+                "onFailure": "block",
+            },
+            "cache": {
+                "enabled": True,
+                "size": "20Gi",
+            },
+        }
+        result = schema.load(data)
+        assert isinstance(result, PythonPackagesSpec)
+        assert result.index_url == "https://artifacts.company.com/pypi/simple"
+        assert result.extra_index_urls == ["https://pypi.org/simple"]
+        assert result.trusted_hosts == ["artifacts.company.com"]
+        assert result.credentials.secret_ref.name == "prod-pypi-creds"
+        assert result.credentials.secret_ref.username_key == "svc-user"
+        assert result.install_policy.retries == 3
+        assert result.cache.size == "20Gi"
+
+
+class TestPhase2HashComputation:
+    """Tests for hash computation with Phase 2 fields."""
+
+    def test_hash_changes_with_index_url(self):
+        """Test hash changes when indexUrl is set."""
+        from kaspr.utils.python_packages import compute_packages_hash
+
+        spec1 = PythonPackagesSpec(packages=["requests"])
+        spec2 = PythonPackagesSpec(
+            packages=["requests"],
+            index_url="https://pypi.company.com/simple",
+        )
+        assert compute_packages_hash(spec1) != compute_packages_hash(spec2)
+
+    def test_hash_changes_with_extra_index_urls(self):
+        """Test hash changes when extraIndexUrls change."""
+        from kaspr.utils.python_packages import compute_packages_hash
+
+        spec1 = PythonPackagesSpec(packages=["requests"])
+        spec2 = PythonPackagesSpec(
+            packages=["requests"],
+            extra_index_urls=["https://private.example.com/simple"],
+        )
+        assert compute_packages_hash(spec1) != compute_packages_hash(spec2)
+
+    def test_hash_changes_with_trusted_hosts(self):
+        """Test hash changes when trustedHosts change."""
+        from kaspr.utils.python_packages import compute_packages_hash
+
+        spec1 = PythonPackagesSpec(packages=["requests"])
+        spec2 = PythonPackagesSpec(
+            packages=["requests"],
+            trusted_hosts=["private.example.com"],
+        )
+        assert compute_packages_hash(spec1) != compute_packages_hash(spec2)
+
+    def test_hash_stable_with_extra_index_order(self):
+        """Test hash is order-independent for extraIndexUrls."""
+        from kaspr.utils.python_packages import compute_packages_hash
+
+        spec1 = PythonPackagesSpec(
+            packages=["requests"],
+            extra_index_urls=["https://a.com/simple", "https://b.com/simple"],
+        )
+        spec2 = PythonPackagesSpec(
+            packages=["requests"],
+            extra_index_urls=["https://b.com/simple", "https://a.com/simple"],
+        )
+        assert compute_packages_hash(spec1) == compute_packages_hash(spec2)
+
+    def test_hash_does_not_include_credentials(self):
+        """Test hash does not change when credentials are added (credentials don't affect packages)."""
+        from kaspr.utils.python_packages import compute_packages_hash
+
+        spec1 = PythonPackagesSpec(
+            packages=["requests"],
+            index_url="https://pypi.company.com/simple",
+        )
+        spec2 = PythonPackagesSpec(
+            packages=["requests"],
+            index_url="https://pypi.company.com/simple",
+            credentials=PythonPackagesCredentials(
+                secret_ref=SecretReference(name="my-secret")
+            ),
+        )
+        # Credentials should not change the hash (same packages, same index)
+        assert compute_packages_hash(spec1) == compute_packages_hash(spec2)
+
+
+class TestPhase2InstallScript:
+    """Tests for Phase 2 install script features."""
+
+    def test_stale_lock_detection_in_script(self):
+        """Test install script contains stale lock detection."""
+        from kaspr.utils.python_packages import generate_install_script
+
+        spec = PythonPackagesSpec(packages=["requests"])
+        script = generate_install_script(spec)
+        assert "check_stale_lock" in script
+        assert "Stale lock detected" in script
+        assert "stat -c %Y" in script  # Linux stat
+        assert "stat -f %m" in script  # macOS fallback
+
+    def test_stale_lock_threshold_matches_timeout(self):
+        """Test stale lock threshold is timeout + 300s."""
+        from kaspr.utils.python_packages import generate_install_script
+
+        spec = PythonPackagesSpec(
+            packages=["requests"],
+            install_policy=PythonPackagesInstallPolicy(timeout=1200),
+        )
+        script = generate_install_script(spec)
+        # threshold = 1200 + 300 = 1500
+        assert "stale_threshold=1500" in script
+
+    def test_pip_command_builder_in_script(self):
+        """Test install script contains pip command builder function."""
+        from kaspr.utils.python_packages import generate_install_script
+
+        spec = PythonPackagesSpec(packages=["requests"])
+        script = generate_install_script(spec)
+        assert "build_pip_command()" in script
+        assert "pip install" in script
+        assert "INDEX_URL" in script
+        assert "PYPI_USERNAME" in script
+        assert "PYPI_PASSWORD" in script
+        assert "EXTRA_INDEX_URLS" in script
+        assert "TRUSTED_HOSTS" in script
+
+    def test_error_detection_block_in_script(self):
+        """Test install script contains error detection block."""
+        from kaspr.utils.python_packages import generate_install_script
+
+        spec = PythonPackagesSpec(packages=["requests"])
+        script = generate_install_script(spec)
+        assert "ERROR_TYPE:" in script
+        assert "ERROR_MSG:" in script
+        assert "package_not_found" in script
+        assert "authentication" in script
+        assert "network" in script
+        assert "hash_mismatch" in script
+        assert "/tmp/pip-error.log" in script
+
+    def test_emptydir_script_has_pip_command_builder(self):
+        """Test emptyDir script contains pip command builder."""
+        from kaspr.utils.python_packages import generate_emptydir_install_script
+
+        spec = PythonPackagesSpec(packages=["requests"])
+        script = generate_emptydir_install_script(spec)
+        assert "build_pip_command()" in script
+        assert "emptyDir" in script
+        # Should NOT have flock
+        assert "flock" not in script
+        assert "check_stale_lock" not in script
+
+    def test_emptydir_script_has_error_detection(self):
+        """Test emptyDir script contains error detection."""
+        from kaspr.utils.python_packages import generate_emptydir_install_script
+
+        spec = PythonPackagesSpec(packages=["requests"])
+        script = generate_emptydir_install_script(spec)
+        assert "ERROR_TYPE:" in script
+        assert "/tmp/pip-error.log" in script
+
+    def test_error_messages_dict(self):
+        """Test ERROR_MESSAGES contains expected keys."""
+        from kaspr.utils.python_packages import ERROR_MESSAGES
+
+        assert "network" in ERROR_MESSAGES
+        assert "package_not_found" in ERROR_MESSAGES
+        assert "hash_mismatch" in ERROR_MESSAGES
+        assert "authentication" in ERROR_MESSAGES
+        assert "timeout" in ERROR_MESSAGES
+
+
+class TestGCSSecretReference:
+    """Tests for GCSSecretReference model and schema."""
+
+    def test_model_instantiation(self):
+        ref = GCSSecretReference(name="gcs-sa-key")
+        assert ref.name == "gcs-sa-key"
+        assert not hasattr(ref, 'key')
+
+    def test_model_with_custom_key(self):
+        ref = GCSSecretReference(name="gcs-sa-key", key="credentials.json")
+        assert ref.key == "credentials.json"
+
+    def test_schema_valid(self):
+        schema = GCSSecretReferenceSchema()
+        result = schema.load({"name": "my-secret", "key": "sa.json"})
+        assert isinstance(result, GCSSecretReference)
+        assert result.name == "my-secret"
+        assert result.key == "sa.json"
+
+    def test_schema_name_required(self):
+        schema = GCSSecretReferenceSchema()
+        with pytest.raises(ValidationError):
+            schema.load({})
+
+    def test_schema_key_optional(self):
+        schema = GCSSecretReferenceSchema()
+        result = schema.load({"name": "my-secret"})
+        assert result.key is None
+
+
+class TestGCSCacheConfig:
+    """Tests for GCSCacheConfig model and schema."""
+
+    def test_model_instantiation(self):
+        ref = GCSSecretReference(name="gcs-sa-key")
+        config = GCSCacheConfig(bucket="my-bucket", secret_ref=ref)
+        assert config.bucket == "my-bucket"
+        assert not hasattr(config, 'prefix')
+        assert not hasattr(config, 'max_archive_size')
+        assert config.secret_ref.name == "gcs-sa-key"
+
+    def test_model_with_all_fields(self):
+        ref = GCSSecretReference(name="gcs-sa-key", key="key.json")
+        config = GCSCacheConfig(
+            bucket="my-bucket",
+            prefix="custom/prefix/",
+            max_archive_size="2Gi",
+            secret_ref=ref,
+        )
+        assert config.prefix == "custom/prefix/"
+        assert config.max_archive_size == "2Gi"
+
+    def test_schema_valid(self):
+        schema = GCSCacheConfigSchema()
+        data = {
+            "bucket": "my-bucket",
+            "prefix": "kaspr-packages/",
+            "maxArchiveSize": "1Gi",
+            "secretRef": {"name": "gcs-sa-key", "key": "sa.json"},
+        }
+        result = schema.load(data)
+        assert isinstance(result, GCSCacheConfig)
+        assert result.bucket == "my-bucket"
+        assert result.prefix == "kaspr-packages/"
+        assert result.max_archive_size == "1Gi"
+        assert result.secret_ref.name == "gcs-sa-key"
+
+    def test_schema_bucket_required(self):
+        schema = GCSCacheConfigSchema()
+        with pytest.raises(ValidationError):
+            schema.load({"secretRef": {"name": "s"}})
+
+    def test_schema_secret_ref_required(self):
+        schema = GCSCacheConfigSchema()
+        with pytest.raises(ValidationError):
+            schema.load({"bucket": "b"})
+
+
+class TestPythonPackagesCacheGCS:
+    """Tests for PythonPackagesCache with GCS type."""
+
+    def test_cache_with_gcs_type(self):
+        schema = PythonPackagesCacheSchema()
+        data = {
+            "type": "gcs",
+            "gcs": {
+                "bucket": "my-bucket",
+                "secretRef": {"name": "gcs-key"},
+            },
+        }
+        result = schema.load(data)
+        assert result.type == "gcs"
+        assert result.gcs.bucket == "my-bucket"
+        assert result.gcs.secret_ref.name == "gcs-key"
+
+    def test_cache_with_pvc_type(self):
+        schema = PythonPackagesCacheSchema()
+        data = {"type": "pvc", "enabled": True}
+        result = schema.load(data)
+        assert result.type == "pvc"
+
+    def test_cache_invalid_type(self):
+        schema = PythonPackagesCacheSchema()
+        data = {"type": "s3"}
+        with pytest.raises(ValidationError, match="Must be one of"):
+            schema.load(data)
+
+    def test_gcs_type_requires_gcs_config(self):
+        schema = PythonPackagesCacheSchema()
+        data = {"type": "gcs"}
+        with pytest.raises(ValidationError, match="gcs"):
+            schema.load(data)
+
+    def test_cache_no_type_defaults_to_none(self):
+        schema = PythonPackagesCacheSchema()
+        data = {"enabled": True}
+        result = schema.load(data)
+        assert result.type is None
+
+    def test_gcs_type_with_enabled_emits_warning(self):
+        """Setting enabled with type=gcs should emit a UserWarning."""
+        import warnings
+        schema = PythonPackagesCacheSchema()
+        data = {
+            "type": "gcs",
+            "enabled": True,
+            "gcs": {
+                "bucket": "my-bucket",
+                "secretRef": {"name": "gcs-key"},
+            },
+        }
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            result = schema.load(data)
+            assert len(w) == 1
+            assert issubclass(w[0].category, UserWarning)
+            assert "cache.enabled is ignored" in str(w[0].message)
+        assert result.type == "gcs"
+
+    def test_gcs_type_without_enabled_no_warning(self):
+        """No warning when enabled is not set with type=gcs."""
+        import warnings
+        schema = PythonPackagesCacheSchema()
+        data = {
+            "type": "gcs",
+            "gcs": {
+                "bucket": "my-bucket",
+                "secretRef": {"name": "gcs-key"},
+            },
+        }
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            schema.load(data)
+            gcs_warnings = [x for x in w if "cache.enabled" in str(x.message)]
+            assert len(gcs_warnings) == 0
+
+
+class TestGenerateGcsInstallScript:
+    """Tests for generate_gcs_install_script()."""
+
+    def test_basic_script_structure(self):
+        from kaspr.utils.python_packages import generate_gcs_install_script
+
+        spec = PythonPackagesSpec(packages=["requests"])
+        script = generate_gcs_install_script(spec)
+        assert "GCS Cache Mode" in script
+        assert "requests" in script
+        assert "python3 -c" in script
+
+    def test_contains_gcs_download(self):
+        from kaspr.utils.python_packages import generate_gcs_install_script
+
+        spec = PythonPackagesSpec(packages=["numpy"])
+        script = generate_gcs_install_script(spec)
+        assert "Cache hit" in script
+        assert "Cache miss" in script
+        assert "GCS_BUCKET" in script
+        assert "GCS_OBJECT_KEY" in script
+
+    def test_contains_gcs_upload(self):
+        from kaspr.utils.python_packages import generate_gcs_install_script
+
+        spec = PythonPackagesSpec(packages=["pandas"])
+        script = generate_gcs_install_script(spec)
+        assert "upload" in script.lower() or "Upload" in script
+
+    def test_contains_pip_fallback(self):
+        from kaspr.utils.python_packages import generate_gcs_install_script
+
+        spec = PythonPackagesSpec(packages=["flask"])
+        script = generate_gcs_install_script(spec)
+        assert "pip install" in script
+        assert "build_pip_command" in script
+
+    def test_archive_size_check(self):
+        from kaspr.utils.python_packages import generate_gcs_install_script
+
+        max_bytes = 500 * 1024 * 1024  # 500Mi
+        spec = PythonPackagesSpec(packages=["requests"])
+        script = generate_gcs_install_script(spec, max_archive_size_bytes=max_bytes)
+        assert str(max_bytes) in script
+
+    def test_sa_key_path_in_script(self):
+        from kaspr.utils.python_packages import generate_gcs_install_script
+
+        spec = PythonPackagesSpec(packages=["requests"])
+        script = generate_gcs_install_script(spec, sa_key_path="/custom/sa.json")
+        assert "/custom/sa.json" in script
+
+    def test_no_flock(self):
+        """GCS mode should NOT use flock (emptyDir per pod)."""
+        from kaspr.utils.python_packages import generate_gcs_install_script
+
+        spec = PythonPackagesSpec(packages=["requests"])
+        script = generate_gcs_install_script(spec)
+        assert "flock" not in script
+
+    def test_retry_logic(self):
+        from kaspr.utils.python_packages import generate_gcs_install_script
+
+        spec = PythonPackagesSpec(packages=["requests"])
+        script = generate_gcs_install_script(spec, retries=5)
+        assert "max_attempts=5" in script
+
+    def test_on_failure_block(self):
+        from kaspr.utils.python_packages import generate_gcs_install_script
+
+        spec = PythonPackagesSpec(packages=["requests"])
+        script = generate_gcs_install_script(spec)
+        assert "blocking pod startup" in script
+
+    def test_on_failure_continue(self):
+        from kaspr.utils.python_packages import generate_gcs_install_script
+
+        policy = PythonPackagesInstallPolicy(on_failure="continue")
+        spec = PythonPackagesSpec(packages=["requests"], install_policy=policy)
+        script = generate_gcs_install_script(spec)
+        assert "allowing pod to start in degraded mode" in script
+
+    def test_invalid_package_raises(self):
+        from kaspr.utils.python_packages import generate_gcs_install_script
+
+        spec = PythonPackagesSpec(packages=["requests; echo bad"])
+        with pytest.raises(ValueError, match="Invalid package names"):
+            generate_gcs_install_script(spec)
+
+    def test_error_detection_block(self):
+        from kaspr.utils.python_packages import generate_gcs_install_script
+
+        spec = PythonPackagesSpec(packages=["requests"])
+        script = generate_gcs_install_script(spec)
+        assert "ERROR_TYPE:" in script
+        assert "/tmp/pip-error.log" in script
+
+    def test_extracts_archive_on_hit(self):
+        from kaspr.utils.python_packages import generate_gcs_install_script
+
+        spec = PythonPackagesSpec(packages=["requests"])
+        script = generate_gcs_install_script(spec)
+        assert "tar xzf" in script
+        assert "tar czf" in script
 

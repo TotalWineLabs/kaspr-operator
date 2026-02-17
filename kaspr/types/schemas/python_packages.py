@@ -1,14 +1,62 @@
 """Python packages schemas for validation."""
 
-from marshmallow import fields, validates, ValidationError
+import re
+import warnings
+from marshmallow import fields, validates, validates_schema, ValidationError
 from kaspr.types.base import BaseSchema
 from kaspr.types.models.python_packages import (
+    GCSCacheConfig,
+    GCSSecretReference,
     PythonPackagesCache,
+    PythonPackagesCredentials,
     PythonPackagesInstallPolicy,
     PythonPackagesResources,
     PythonPackagesSpec,
     PythonPackagesStatus,
+    SecretReference,
 )
+
+
+class GCSSecretReferenceSchema(BaseSchema):
+    """Schema for GCS service account key Secret reference."""
+
+    __model__ = GCSSecretReference
+
+    name = fields.String(
+        data_key="name",
+        required=True,
+    )
+    key = fields.String(
+        data_key="key",
+        allow_none=True,
+        load_default=None,
+    )
+
+
+class GCSCacheConfigSchema(BaseSchema):
+    """Schema for GCS cache configuration."""
+
+    __model__ = GCSCacheConfig
+
+    bucket = fields.String(
+        data_key="bucket",
+        required=True,
+    )
+    prefix = fields.String(
+        data_key="prefix",
+        allow_none=True,
+        load_default=None,
+    )
+    max_archive_size = fields.String(
+        data_key="maxArchiveSize",
+        allow_none=True,
+        load_default=None,
+    )
+    secret_ref = fields.Nested(
+        GCSSecretReferenceSchema(),
+        data_key="secretRef",
+        required=True,
+    )
 
 
 class PythonPackagesCacheSchema(BaseSchema):
@@ -16,6 +64,11 @@ class PythonPackagesCacheSchema(BaseSchema):
     
     __model__ = PythonPackagesCache
     
+    type = fields.String(
+        data_key="type",
+        allow_none=True,
+        load_default=None,
+    )
     enabled = fields.Boolean(
         data_key="enabled",
         allow_none=True,
@@ -41,6 +94,22 @@ class PythonPackagesCacheSchema(BaseSchema):
         allow_none=True,
         load_default=None,
     )
+    gcs = fields.Nested(
+        GCSCacheConfigSchema(),
+        data_key="gcs",
+        allow_none=True,
+        load_default=None,
+    )
+    
+    @validates("type")
+    def validate_type(self, value):
+        """Validate cache type."""
+        if value is not None:
+            valid_types = ["pvc", "gcs"]
+            if value not in valid_types:
+                raise ValidationError(
+                    f"Invalid cache type: {value}. Must be one of {valid_types}"
+                )
     
     @validates("access_mode")
     def validate_access_mode(self, value):
@@ -49,6 +118,25 @@ class PythonPackagesCacheSchema(BaseSchema):
             raise ValidationError(
                 f"Invalid access mode: {value}. Only 'ReadWriteMany' is currently supported for shared package cache."
             )
+    
+    @validates_schema
+    def validate_gcs_config(self, data, **kwargs):
+        """Validate GCS configuration is provided when type is gcs."""
+        cache_type = data.get("type")
+        if cache_type == "gcs":
+            if not data.get("gcs"):
+                raise ValidationError(
+                    "GCS configuration (gcs) is required when cache type is 'gcs'.",
+                    field_name="gcs",
+                )
+            if data.get("enabled") is not None:
+                warnings.warn(
+                    "cache.enabled is ignored when cache.type is 'gcs'. "
+                    "GCS caching is always active when type is 'gcs'. "
+                    "Remove the 'enabled' field to silence this warning.",
+                    UserWarning,
+                    stacklevel=2,
+                )
 
 
 class PythonPackagesInstallPolicySchema(BaseSchema):
@@ -112,6 +200,43 @@ class PythonPackagesResourcesSchema(BaseSchema):
     )
 
 
+class SecretReferenceSchema(BaseSchema):
+    """Schema for Kubernetes Secret reference."""
+
+    __model__ = SecretReference
+
+    name = fields.String(
+        data_key="name",
+        required=True,
+    )
+    username_key = fields.String(
+        data_key="usernameKey",
+        allow_none=True,
+        load_default=None,
+    )
+    password_key = fields.String(
+        data_key="passwordKey",
+        allow_none=True,
+        load_default=None,
+    )
+
+
+class PythonPackagesCredentialsSchema(BaseSchema):
+    """Schema for PyPI authentication credentials."""
+
+    __model__ = PythonPackagesCredentials
+
+    secret_ref = fields.Nested(
+        SecretReferenceSchema(),
+        data_key="secretRef",
+        required=True,
+    )
+
+
+# URL validation pattern for index URLs
+_URL_PATTERN = re.compile(r'^https?://.+')
+
+
 class PythonPackagesSpecSchema(BaseSchema):
     """Schema for Python packages specification."""
     
@@ -121,6 +246,29 @@ class PythonPackagesSpecSchema(BaseSchema):
         fields.String(),
         data_key="packages",
         required=True,
+    )
+    index_url = fields.String(
+        data_key="indexUrl",
+        allow_none=True,
+        load_default=None,
+    )
+    extra_index_urls = fields.List(
+        fields.String(),
+        data_key="extraIndexUrls",
+        allow_none=True,
+        load_default=None,
+    )
+    trusted_hosts = fields.List(
+        fields.String(),
+        data_key="trustedHosts",
+        allow_none=True,
+        load_default=None,
+    )
+    credentials = fields.Nested(
+        PythonPackagesCredentialsSchema(),
+        data_key="credentials",
+        allow_none=True,
+        load_default=None,
     )
     cache = fields.Nested(
         PythonPackagesCacheSchema(),
@@ -157,6 +305,24 @@ class PythonPackagesSpecSchema(BaseSchema):
                 raise ValidationError(
                     f"Package specification contains invalid whitespace: {package}"
                 )
+
+    @validates("index_url")
+    def validate_index_url(self, value):
+        """Validate index URL is well-formed."""
+        if value is not None and not _URL_PATTERN.match(value):
+            raise ValidationError(
+                f"Invalid index URL: {value}. Must start with http:// or https://"
+            )
+
+    @validates("extra_index_urls")
+    def validate_extra_index_urls(self, value):
+        """Validate extra index URLs are well-formed."""
+        if value is not None:
+            for url in value:
+                if not _URL_PATTERN.match(url):
+                    raise ValidationError(
+                        f"Invalid extra index URL: {url}. Must start with http:// or https://"
+                    )
 
 
 class PythonPackagesStatusSchema(BaseSchema):
