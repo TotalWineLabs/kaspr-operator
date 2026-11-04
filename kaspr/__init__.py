@@ -19,6 +19,7 @@ from kaspr.handlers import (  # noqa: E402
     probes, 
     kasprapp,
     kasprtask,
+    kasprjoin,
 )
 
 __all__ = [
@@ -28,7 +29,8 @@ __all__ = [
     "kasprwebview",
     "kasprtable",
     "kasprtask",
+    "kasprjoin",
 ]
 
-__version__ = "0.19.8"
+__version__ = "0.20.0"
     
