@@ -1000,6 +1000,8 @@ class FakeComponent:
     cluster = "agent-1"
     config_map_name = "agent-1-agent"
     hash = "hash-1"
+    WRITES_CONFIG_MAP = True
+    config_map_status = BaseAppComponent.config_map_status
 
     def __init__(self):
         self.synced = 0
@@ -1017,7 +1019,10 @@ def run_component(monkeypatch, status, app_exists=True, component=None):
     class FakeKasprApp:
         @staticmethod
         def default():
-            return SimpleNamespace(fetch=AsyncMock(return_value={"kind": "KasprApp"} if app_exists else None))
+            return SimpleNamespace(
+                fetch=AsyncMock(return_value={"kind": "KasprApp"} if app_exists else None),
+                delivers_bundles=AsyncMock(return_value=False),
+            )
 
     monkeypatch.setattr(component_handler, "KasprApp", FakeKasprApp)
     patch = kopf.Patch()

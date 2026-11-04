@@ -39,6 +39,10 @@ class BaseAppComponent(BaseResource):
     COMPONENT_TYPE = None
     PLURAL_NAME = None
 
+    # Whether the component has a ConfigMap of its own when its app does not deliver
+    # bundles. Joins never have one: they are delivered in bundles only.
+    WRITES_CONFIG_MAP = True
+
     kaspr_resource: KasprResourceT
     config_map_name: str
     volume_mount_name: str
@@ -216,6 +220,10 @@ class BaseAppComponent(BaseResource):
                 self.file_name: self.file_data,
             },
         )
+        # Hash the config map as it is stored, with its hash annotation: hashing leaves
+        # that annotation out, so the value is the component's own hash, which its
+        # status reports and its app's pods carry.
+        annotations.update(self.prepare_hash_annotation(""))
         annotations.update(
             self.prepare_hash_annotation(self.prepare_config_map_hash(configmap))
         )
@@ -292,6 +300,15 @@ class BaseAppComponent(BaseResource):
 
     async def patch_app_status(self, app_status: str):
         """Record whether this component's KasprApp exists in its status."""
+        return await self.patch_status(
+            {"app": {"name": self.app_name, "status": app_status}}
+        )
+
+    async def patch_status(self, fields: Mapping[str, Any]):
+        """Merge fields into this component's status; a None value removes a field.
+
+        Returns the patched component, or None if it no longer exists.
+        """
         return await self.patch_custom_object_status(
             self.custom_objects_api,
             namespace=self.namespace,
@@ -299,8 +316,17 @@ class BaseAppComponent(BaseResource):
             version=self.GROUP_VERSION,
             plural=self.PLURAL_NAME,
             name=self.cluster,
-            status={"app": {"name": self.app_name, "status": app_status}},
+            status=dict(fields),
         )
+
+    def config_map_status(self, bundled: bool) -> Dict[str, Any]:
+        """The component's own ConfigMap in its status; None removes it from there.
+
+        A component of an app that delivers bundles has none.
+        """
+        if not self.WRITES_CONFIG_MAP:
+            return {}
+        return {"configMap": None if bundled else self.config_map_name}
 
     def info(self) -> Dict:
         """Return kaspr resource info."""
